@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>电力电子波形仿真：三相/单相全控整流</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f4f9;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            width: 95%;
+            max-width: 950px;
+        }
+        h2 { color: #333; text-align: center; margin-bottom: 25px;}
+        
+        /* 控制面板样式 */
+        .controls-wrapper {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .section-title {
+            font-size: 0.85em;
+            text-transform: uppercase;
+            color: #6c757d;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #dee2e6;
+            padding-bottom: 5px;
+        }
+
+        .controls-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            align-items: flex-start;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-width: 140px;
+        }
+
+        /* 单选框美化 */
+        .radio-label {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            font-size: 0.95em;
+        }
+        .radio-label input { margin-right: 8px; accent-color: #007bff; }
+
+        /* 滑块样式 */
+        .slider-container {
+            margin-top: 5px;
+        }
+        label { font-weight: 600; font-size: 0.9em; color: #495057; }
+        span.value { color: #007bff; font-weight: bold; margin-left: 5px; }
+
+        canvas {
+            border: 1px solid #ddd;
+            width: 100%;
+            background-color: #fff;
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.02);
+        }
+
+        .legend {
+            margin-top: 15px;
+            font-size: 0.85em;
+            text-align: center;
+            color: #555;
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .legend-item { display: flex; align-items: center; }
+        .dot { height: 10px; width: 10px; border-radius: 50%; margin-right: 6px; }
+        .line-sample { width: 25px; height: 2px; margin-right: 6px; }
+
+        /* 动态显隐类 */
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>整流器波形发生器</h2>
+    
+    <div class="controls-wrapper">
+        <div class="controls-row">
+            <div class="control-group">
+                <div class="section-title">电路拓扑 (Topology)</div>
+                <label class="radio-label">
+                    <input type="radio" name="topology" value="3phase" checked> 三相全控桥
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="topology" value="1phase"> 单相全控桥
+                </label>
+            </div>
+
+            <div class="control-group">
+                <div class="section-title">负载类型 (Load)</div>
+                <label class="radio-label">
+                    <input type="radio" name="loadType" value="L" checked> 阻感 / 恒流 (L)
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="loadType" value="R"> 纯电阻 (R)
+                </label>
+                <label class="radio-label" id="option-voltage-source">
+                    <input type="radio" name="loadType" value="E"> 反电动势 (R-E)
+                </label>
+            </div>
+
+            <div class="control-group" style="flex-grow: 1;">
+                <div class="section-title">控制参数 (Parameters)</div>
+                
+                <div class="slider-container">
+                    <label>触发角 $\alpha$: <span id="alpha-val" class="value">30</span>°</label>
+                    <input type="range" id="alpha" min="0" max="170" value="30" step="1" style="width:100%">
+                </div>
+
+                <div class="slider-container" id="container-mu">
+                    <label>重叠角 $\mu$ (电感效应): <span id="mu-val" class="value">0</span>°</label>
+                    <input type="range" id="mu" min="0" max="45" value="0" step="1" style="width:100%">
+                </div>
+
+                <div class="slider-container hidden" id="container-emf">
+                    <label>反电动势 $E$: <span id="emf-val" class="value">40</span>%</label>
+                    <input type="range" id="emf" min="0" max="95" value="40" step="1" style="width:100%">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <canvas id="scope" width="900" height="450"></canvas>
+    
+    <div class="legend" id="legend-box">
+        </div>
+</div>
+
+<script>
+    // DOM 元素
+    const canvas = document.getElementById('scope');
+    const ctx = canvas.getContext('2d');
+    
+    // Inputs
+    const alphaInput = document.getElementById('alpha');
+    const muInput = document.getElementById('mu');
+    const emfInput = document.getElementById('emf');
+    
+    // Displays
+    const alphaDisplay = document.getElementById('alpha-val');
+    const muDisplay = document.getElementById('mu-val');
+    const emfDisplay = document.getElementById('emf-val');
+    
+    // Radios
+    const topoRadios = document.getElementsByName('topology');
+    const loadRadios = document.getElementsByName('loadType');
+    
+    // Containers
+    const containerMu = document.getElementById('container-mu');
+    const containerEmf = document.getElementById('container-emf');
+    const optionVoltageSource = document.getElementById('option-voltage-source');
+
+    // 绘图常量
+    const width = canvas.width;
+    const height = canvas.height;
+    const centerY = height / 2;
+    const amplitude = 80; // 电压幅值
+
+    // 状态变量
+    let state = {
+        topo: '3phase',
+        load: 'L',
+        alpha: 30,
+        mu: 0,
+        emf: 0.4 // E / Vm
+    };
+
+    // --- 工具函数 ---
+    function toRad(deg) { return deg * Math.PI / 180; }
+
+    function get3Phase(theta) {
+        return {
+            a: amplitude * Math.sin(theta),
+            b: amplitude * Math.sin(theta - 2 * Math.PI / 3),
+            c: amplitude * Math.sin(theta + 2 * Math.PI / 3)
+        };
+    }
+
+    // --- UI 更新逻辑 ---
+    function updateUI() {
+        // 获取当前选中值
+        topoRadios.forEach(r => { if(r.checked) state.topo = r.value; });
+        loadRadios.forEach(r => { if(r.checked) state.load = r.value; });
+        
+        state.alpha = parseInt(alphaInput.value);
+        state.mu = parseInt(muInput.value);
+        state.emf = parseInt(emfInput.value) / 100;
+
+        // 更新数字显示
+        alphaDisplay.textContent = state.alpha;
+        muDisplay.textContent = state.mu;
+        emfDisplay.textContent = parseInt(emfInput.value);
+
+        // 显隐逻辑
+        if (state.topo === '1phase') {
+            optionVoltageSource.classList.remove('hidden'); // 单相才显示电压源负载选项
+        } else {
+            // 三相模式下，暂时隐藏电压源负载（为了简化，或者自动切回L/R）
+            optionVoltageSource.classList.add('hidden');
+            if (state.load === 'E') {
+                state.load = 'L'; // 强制切回 L
+                loadRadios[0].checked = true;
+            }
+        }
+
+        // 负载类型决定哪些滑块可见
+        if (state.load === 'E') {
+            containerEmf.classList.remove('hidden');
+            containerMu.classList.add('hidden'); // 电压源负载通常忽略Mu或者简化
+        } else if (state.load === 'R') {
+            containerEmf.classList.add('hidden');
+            containerMu.classList.add('hidden'); // 纯电阻通常忽略Mu
+        } else {
+            // L Load
+            containerEmf.classList.add('hidden');
+            containerMu.classList.remove('hidden');
+        }
+
+        draw();
+        updateLegend();
+    }
+
+    function updateLegend() {
+        const legendBox = document.getElementById('legend-box');
+        let html = '';
+        
+        // 共同项
+        html += `<div class="legend-item"><span class="dot" style="background:#2ecc71;"></span>输出电压 (Vd)</div>`;
+        html += `<div class="legend-item"><span class="line-sample" style="border-top:2px dashed #e74c3c;"></span>平均电压 (Vavg)</div>`;
+
+        if (state.topo === '3phase') {
+            html = `<div class="legend-item"><span class="dot" style="background:#eee;"></span>相电压</div>` + 
+                   `<div class="legend-item"><span class="line-sample" style="border-top:2px dashed #89CFF0;"></span>线电压</div>` + html;
+        } else {
+            html = `<div class="legend-item"><span class="line-sample" style="border-top:2px dashed #bbb;"></span>输入电源 (Vs)</div>` + html;
+            if (state.load === 'E') {
+                html += `<div class="legend-item"><span class="line-sample" style="background:#f39c12; height:2px;"></span>反电动势 (E)</div>`;
+            }
+        }
+        legendBox.innerHTML = html;
+    }
+
+    // --- 核心计算逻辑 ---
+
+    // 1. 三相计算 (复用之前的逻辑)
+    function calc3PhaseVd(thetaDeg) {
+        let angle = thetaDeg % 360;
+        if (angle < 0) angle += 360;
+        const phases = get3Phase(toRad(thetaDeg));
+        
+        // 上桥
+        let vUp = 0; 
+        let shiftA = angle - (30 + state.alpha);
+        while (shiftA < 0) shiftA += 360;
+        
+        if (shiftA >= 0 && shiftA < 120) {
+            vUp = (shiftA < state.mu) ? (phases.c + phases.a)/2 : phases.a;
+        } else if (shiftA >= 120 && shiftA < 240) {
+            let s = shiftA - 120;
+            vUp = (s < state.mu) ? (phases.a + phases.b)/2 : phases.b;
+        } else {
+            let s = shiftA - 240;
+            vUp = (s < state.mu) ? (phases.b + phases.c)/2 : phases.c;
+        }
+
+        // 下桥
+        let vDown = 0;
+        let shiftDown = angle - (90 + state.alpha);
+        while (shiftDown < 0) shiftDown += 360;
+
+        if (shiftDown >= 0 && shiftDown < 120) {
+            vDown = (shiftDown < state.mu) ? (phases.b + phases.c)/2 : phases.c;
+        } else if (shiftDown >= 120 && shiftDown < 240) {
+            let s = shiftDown - 120;
+            vDown = (s < state.mu) ? (phases.c + phases.a)/2 : phases.a;
+        } else {
+            let s = shiftDown - 240;
+            vDown = (s < state.mu) ? (phases.a + phases.b)/2 : phases.b;
+        }
+
+        let Vd = vUp - vDown;
+        
+        // 负载处理
+        if (state.load === 'R' && Vd < 0) Vd = 0;
+        
+        return Vd;
+    }
+
+    // 2. 单相计算 (新逻辑)
+    function calc1PhaseVd(thetaDeg) {
+        // 归一化到 0-180 (单相全桥每半个周期重复一次)
+        // 但为了画图连续，我们处理完整的 360
+        // 输入电压 Vs = A * sin(theta)
+        // 整流后的潜在电压 Vpot = |Vs|
+        
+        let angle = thetaDeg % 360; 
+        if(angle < 0) angle += 360;
+        
+        const rad = toRad(thetaDeg);
+        const Vs = amplitude * Math.sin(rad);
+        const absVs = Math.abs(Vs);
+        
+        // 确定半周期索引 (0: 0-180, 1: 180-360)
+        const isPositiveHalf = (angle < 180);
+        
+        // 相对当前半周期的角度 0-180
+        let relAngle = angle % 180; 
+
+        // === 负载逻辑分支 ===
+        
+        // A. 阻感负载 (L - Continuous Current)
+        // 特点：电流连续，电压可以为负。
+        // 换相重叠 mu：单相全桥换相时，4个臂短路电源？
+        // 实际上单相全桥换相期间，电流从一对臂换到另一对，期间输出电压钳位为0。
+        if (state.load === 'L') {
+            // 触发点在 alpha
+            // 换相区间: [alpha, alpha + mu]
+            // 如果当前角度在换相区间内 -> Vd = 0
+            // 否则 -> Vd = Vs (正半周) 或 -Vs (负半周) -> 即跟随 AC 波形
+            
+            // 需要判断当前是哪一对晶闸管导通。
+            // T1/T4 导通区间：alpha ~ 180+alpha
+            // T2/T3 导通区间：180+alpha ~ 360+alpha
+            
+            // 简化判断：看距离上一次触发点的角度
+            // 上一次触发点可能是 alpha, 或者是 180+alpha, 或者是 -180+alpha
+            
+            // 找最近的过去的触发点
+            let triggerPoint = state.alpha;
+            while(triggerPoint > angle) triggerPoint -= 180;
+            while(angle - triggerPoint >= 180) triggerPoint += 180;
+            
+            let timeSinceTrigger = angle - triggerPoint; // 应该在 0 到 180 之间
+            
+            if (timeSinceTrigger < state.mu) {
+                return 0; // 换相重叠，输出短路为0
+            } else {
+                // 正常导通，输出为当前电源电压（注意极性）
+                // 如果 triggerPoint 是 0/360 附近的(偶数倍180)，则是正半周驱动
+                // 如果 triggerPoint 是 180 附近的，则是负半周驱动
+                
+                // 简单方法：根据时间推断。
+                // 如果 timeSinceTrigger 属于 alpha 触发的那一组，则输出 Vs
+                // 但因为是全桥，实际上输出总是趋向于正（如果不考虑延迟带来的负压）
+                // 等等，恒流负载下，如果 alpha > 90，波形会变负。
+                // 实际上 Vd 总是等于 (-1)^k * Vs
+                
+                // 确定极性：
+                // 触发点 triggerPoint % 360 == alpha -> 正向连接 (Vd = Vs)
+                // 触发点 triggerPoint % 360 == 180+alpha -> 反向连接 (Vd = -Vs)
+                
+                let normTrigger = triggerPoint % 360;
+                if (normTrigger < 0) normTrigger += 360;
+                
+                if (Math.abs(normTrigger - state.alpha) < 0.1) {
+                    return Vs;
+                } else {
+                    return -Vs;
+                }
+            }
+        }
+        
+        // B. 纯电阻负载 (R)
+        // 特点：电压过零即关断。Vd 不能为负。
+        else if (state.load === 'R') {
+            // 只有当 angle > alpha 且 angle < 180 (对于正半周) 时导通
+            if (relAngle > state.alpha) {
+                return absVs;
+            } else {
+                return 0;
+            }
+        }
+        
+        // C. 反电动势负载 (E)
+        // 特点：只有 Vs > E 且 被触发 后才导通。
+        // 否则 Vd = E
+        else if (state.load === 'E') {
+            const E_val = state.emf * amplitude;
+            
+            // 计算自然导通角 theta_e = arcsin(E/Vm)
+            // 只有当 angle > theta_e 时才可能导通
+            // 且必须 angle > alpha (触发脉冲)
+            // 且必须 angle < 180 - theta_e (电压低于E就关断了)
+            
+            let theta_e = Math.asin(state.emf) * 180 / Math.PI;
+            let start = Math.max(state.alpha, theta_e);
+            let end = 180 - theta_e;
+            
+            // 在单相全桥中，每个半波都是一样的逻辑
+            if (relAngle > start && relAngle < end) {
+                return absVs; // 导通，输出整流电压
+            } else {
+                return E_val; // 关断，输出电池电压
+            }
+        }
+        
+        return 0;
+    }
+
+    // --- 绘图主函数 ---
+    function draw() {
+        ctx.clearRect(0, 0, width, height);
+        
+        // 绘制坐标轴
+        ctx.strokeStyle = '#eee';
+        ctx.beginPath(); ctx.moveTo(0, centerY); ctx.lineTo(width, centerY); ctx.stroke();
+
+        // 1. 背景绘制 (根据拓扑)
+        if (state.topo === '3phase') {
+            // 画三相相电压 (实线淡灰)
+            ctx.setLineDash([]); ctx.lineWidth = 1;
+            ['#f2f2f2', '#f2f2f2', '#f2f2f2'].forEach((color, i) => {
+                ctx.beginPath(); ctx.strokeStyle = color;
+                for (let x = 0; x < width; x++) {
+                    const theta = (x / width) * 4 * Math.PI;
+                    const p = get3Phase(theta);
+                    const y = centerY - (i===0?p.a : i===1?p.b : p.c);
+                    x===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+                }
+                ctx.stroke();
+            });
+            // 画三相线电压 (虚线浅蓝)
+            ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.strokeStyle = '#89CFF0';
+            const combinations = [[0,1],[0,2],[1,2],[1,0],[2,0],[2,1]]; // a-b, a-c...
+            combinations.forEach(combo => {
+                ctx.beginPath();
+                for (let x = 0; x < width; x++) {
+                    const theta = (x / width) * 4 * Math.PI;
+                    const p = get3Phase(theta);
+                    const vals = [p.a, p.b, p.c];
+                    const val = vals[combo[0]] - vals[combo[1]];
+                    const y = centerY - val;
+                    x===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+                }
+                ctx.stroke();
+            });
+        } else {
+            // 单相模式背景：画一个虚线的正弦波输入
+            ctx.setLineDash([5, 5]); ctx.lineWidth = 2; ctx.strokeStyle = '#ddd';
+            ctx.beginPath();
+            for (let x = 0; x < width; x++) {
+                const theta = (x / width) * 4 * Math.PI;
+                const y = centerY - amplitude * Math.sin(theta);
+                x===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+            }
+            ctx.stroke();
+            
+            // 如果是 E 负载，画出 E 的电平线
+            if (state.load === 'E') {
+                const yE = centerY - (state.emf * amplitude);
+                ctx.strokeStyle = '#f39c12'; ctx.lineWidth = 1; ctx.setLineDash([2, 2]);
+                ctx.beginPath(); ctx.moveTo(0, yE); ctx.lineTo(width, yE); ctx.stroke();
+            }
+        }
+
+        // 2. 输出波形绘制 (Vd)
+        ctx.setLineDash([]); ctx.lineWidth = 3; ctx.strokeStyle = '#2ecc71';
+        ctx.beginPath();
+
+        let sumV = 0;
+        let count = 0;
+        
+        // 采样区间
+        const cycleRad = (state.topo === '3phase') ? Math.PI*2 : Math.PI; // 平均值计算周期不同，但为了简单，统一算2个周期
+
+        for (let x = 0; x < width; x++) {
+            const thetaRad = (x / width) * 4 * Math.PI;
+            const thetaDeg = thetaRad * 180 / Math.PI;
+            
+            let Vd = 0;
+            if (state.topo === '3phase') {
+                Vd = calc3PhaseVd(thetaDeg);
+            } else {
+                Vd = calc1PhaseVd(thetaDeg);
+            }
+
+            const y = centerY - Vd;
+            if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+
+            // 统计平均值 (取中间一段稳定的)
+            if (thetaDeg >= 360 && thetaDeg < 720) {
+                sumV += Vd;
+                count++;
+            }
+        }
+        ctx.stroke();
+
+        // 3. 平均值线
+        if (count > 0) {
+            const avgV = sumV / count;
+            const avgY = centerY - avgV;
+            ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 2; ctx.setLineDash([8, 4]);
+            ctx.beginPath(); ctx.moveTo(0, avgY); ctx.lineTo(width, avgY); ctx.stroke();
+        }
+    }
+
+    // 事件绑定
+    [alphaInput, muInput, emfInput].forEach(el => el.addEventListener('input', updateUI));
+    topoRadios.forEach(el => el.addEventListener('change', updateUI));
+    loadRadios.forEach(el => el.addEventListener('change', updateUI));
+
+    // 初始化
+    updateUI();
+
+</script>
+
+</body>
+</html>
